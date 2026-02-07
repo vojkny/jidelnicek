@@ -2,9 +2,16 @@ name = "jidelnicek"
 main = "src/index.ts"
 compatibility_date = "2026-02-07"
 
+workers_dev = true
+preview_urls = true
+
+[routes]
+pattern = "jidelnicek.knyt.tl"
+zone_name = "knyt.tl"
+
 [triggers]
 crons = ["0 2 * * *"] # 02:00 UTC daily
 
 [[kv_namespaces]]
 binding = "OTTO_JIDELNICEK"
-id = "OTTO_JIDELNICEK"
+id = "c6a42fc51a664dfc9410e9aaa84d4c1f"
