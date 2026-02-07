@@ -1,0 +1,10 @@
+name = "daily-jidelnicek"
+main = "src/index.ts"
+compatibility_date = "2026-02-07"
+
+[triggers]
+crons = ["0 2 * * *"] # 02:00 UTC daily
+
+[[kv_namespaces]]
+binding = "OTTO_JIDELNICEK"
+id = "OTTO_JIDELNICEK"
