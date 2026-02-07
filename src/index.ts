@@ -2,83 +2,140 @@ export interface Env {
   OTTO_JIDELNICEK: KVNamespace;
 }
 
-const KEY = "daily:lines:v1";
-
-function mulberry32(seed: number) {
-  // Small deterministic PRNG
-  return function () {
-    let t = (seed += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+interface MealData {
+  date: string;
+  generatedAt: string;
+  meals: string[];
 }
 
-function todayUtcKeyDate(d = new Date()) {
-  // YYYY-MM-DD in UTC
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+const KEY = "daily:meals:v1";
+const MENU_URL = "http://109.80.99.184/ejidelnicek/menu/";
+const IGNORED_WORDS = ["prázdniny", "oběd"];
+
+/**
+ * Extracts meal names from HTML content using regex
+ */
+function extractMealsFromHtml(html: string, ignoredWords: Set<string>): Set<string> {
+    const meals = new Set<string>();
+
+    // Regex to extract content from ejidelnicek.setJidelnicek({...});
+    const jsonRegex = /ejidelnicek\.setJidelnicek\((\{.*?})\);/s;
+    const match = html.match(jsonRegex);
+
+    if (match) {
+        const jsonText = match[1];
+
+        // Simple regex for meal names "nazev":"..."
+        const mealRegex = /"nazev"\s*:\s*"([^"]+)"/g;
+        let mealMatch;
+
+        while ((mealMatch = mealRegex.exec(jsonText)) !== null) {
+            const name = mealMatch[1].trim();
+
+            if (!name) continue;
+
+            const nameLower = name.toLowerCase();
+            // Check if name doesn't contain any ignored words
+            const hasIgnoredWord = Array.from(ignoredWords).some(word => nameLower.includes(word));
+
+            if (!hasIgnoredWord) {
+                meals.add(name);
+            }
+        }
+    }
+
+    return meals;
 }
 
-function generate30Lines(dateKey: string) {
-  // Seed based on date so it’s stable for that day (still “random”)
-  let seed = 0;
-  for (let i = 0; i < dateKey.length; i++) seed = (seed * 31 + dateKey.charCodeAt(i)) >>> 0;
+/**
+ * Fetches meals from the menu website and stores them in KV
+ */
+async function readMeals(env: Env): Promise<MealData> {
+    const ignoredWords = new Set(IGNORED_WORDS);
 
-  const rand = mulberry32(seed);
-  const lines: string[] = [];
+    // Read existing meals from KV
+    const existingData = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
+    const existingMeals = new Set<string>(existingData?.meals || []);
 
-  for (let i = 0; i < 30; i++) {
-    const n = Math.floor(rand() * 1_000_000_000);
-    const token = n.toString(16).padStart(8, "0");
-    lines.push(`line ${String(i + 1).padStart(2, "0")}: ${dateKey} :: ${token}`);
-  }
+    // Fetch the HTML page
+    const response = await fetch(MENU_URL);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch menu: ${response.status} ${response.statusText}`);
+    }
+    const html = await response.text();
 
-  return lines;
-}
+    // Extract new meals and merge with existing ones
+    const newMeals = extractMealsFromHtml(html, ignoredWords);
+    newMeals.forEach(meal => existingMeals.add(meal));
 
-async function storeDailyLines(env: Env, dateKey: string) {
-  const lines = generate30Lines(dateKey);
-  const payload = {
-    date: dateKey,
-    generatedAt: new Date().toISOString(),
-    lines,
-  };
+    // Prepare payload with sorted meals
+    const sortedMeals = Array.from(existingMeals).sort();
+    const payload: MealData = {
+        date: new Date().toISOString().split('T')[0],
+        generatedAt: new Date().toISOString(),
+        meals: sortedMeals,
+    };
 
-  // Store JSON + keep it for e.g. 14 days (optional)
-  await env.OTTO_JIDELNICEK.put(KEY, JSON.stringify(payload), { expirationTtl: 60 * 60 * 24 * 14 });
-  return payload;
+    // Write to KV namespace (no expiration - data persists indefinitely)
+    await env.OTTO_JIDELNICEK.put(KEY, JSON.stringify(payload));
+
+    return payload;
 }
 
 export default {
   // HTTP endpoint
   async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
+    try {
+      const url = new URL(request.url);
 
-    // GET /lines -> return latest stored list
-    if (url.pathname === "/lines") {
-      const stored = await env.OTTO_JIDELNICEK.get(KEY, "json") as
-        | { date: string; generatedAt: string; lines: string[] }
-        | null;
+      // GET / -> return latest stored meal list
+      if (url.pathname === "/") {
+        const stored = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
 
-      if (!stored) {
-        // First run fallback: generate on-demand so endpoint works immediately
-        const dateKey = todayUtcKeyDate();
-        const payload = await storeDailyLines(env, dateKey);
-        return Response.json(payload, { headers: { "Cache-Control": "no-store" } });
+        if (!stored) {
+          // First run fallback: generate on-demand so endpoint works immediately
+          const payload = await readMeals(env);
+          return Response.json(payload, {
+            headers: {
+              "Cache-Control": "no-store",
+              "Content-Type": "application/json"
+            }
+          });
+        }
+
+        return Response.json(stored, {
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json"
+          }
+        });
       }
 
-      return Response.json(stored, { headers: { "Cache-Control": "no-store" } });
+      return new Response("Not Found", { status: 404 });
+    } catch (error) {
+      console.error("Error in fetch handler:", error);
+      return new Response(
+        JSON.stringify({
+          error: "Internal Server Error",
+          message: error instanceof Error ? error.message : "Unknown error"
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" }
+        }
+      );
     }
-
-    return new Response("Not Found", { status: 404 });
   },
 
   // Daily cron trigger
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
-    const dateKey = todayUtcKeyDate();
-    await storeDailyLines(env, dateKey);
+    try {
+      await readMeals(env);
+      console.log("Successfully updated meals from scheduled trigger");
+    } catch (error) {
+      console.error("Error in scheduled handler:", error);
+      // Re-throw to mark the cron execution as failed
+      throw error;
+    }
   },
 };
