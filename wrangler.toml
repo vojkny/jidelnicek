@@ -5,7 +5,7 @@ compatibility_date = "2026-02-07"
 workers_dev = true
 preview_urls = true
 
-[routes]
+[[routes]]
 pattern = "jidelnicek.knyt.tl"
 zone_name = "knyt.tl"
 
