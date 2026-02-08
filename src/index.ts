@@ -5,6 +5,7 @@ export interface Env {
 interface StoredMeal {
   name: string;
   date: string;
+  weekday: string;
   order: number;
   priority: number;
 }
@@ -15,29 +16,23 @@ interface MealData {
   meals: StoredMeal[];
 }
 
-const KEY = "daily:meals:v2";
+const KEY = "daily:meals:v3";
 const MENU_URL = "http://ejdl.knyt.tl/ejidelnicek/menu/";
 const IGNORED_WORDS = ["prázdniny", "oběd"];
 
-/* ---------------------------------- */
-/* JSON extraction from script block  */
-/* ---------------------------------- */
+/* ---------------- JSON extraction ---------------- */
 
 function extractJidelnicekJson(html: string): any {
   const match = html.match(
     /ejidelnicek\.setJidelnicek\((\{[\s\S]*?\})\);/
   );
 
-  if (!match) {
-    throw new Error("Jídelníček JSON nebyl nalezen v HTML");
-  }
+  if (!match) throw new Error("Jídelníček JSON nenalezen");
 
   return JSON.parse(match[1]);
 }
 
-/* ---------------------------------- */
-/* Meal parsing                       */
-/* ---------------------------------- */
+/* ---------------- Meal parsing ---------------- */
 
 function extractMealsFromJson(
   data: any,
@@ -56,6 +51,12 @@ function extractMealsFromJson(
       const menuMap = day.menuMap;
       if (!menuMap) continue;
 
+      // "PONDĚLÍ 9.2.2026" → vezmeme jen PONDĚLÍ
+      const weekday =
+        typeof day.datumden === "string"
+          ? day.datumden.split(" ")[0]
+          : "";
+
       for (const [orderKey, item] of Object.entries<any>(menuMap)) {
         const name = item.nazev?.trim();
         if (!name) continue;
@@ -66,6 +67,7 @@ function extractMealsFromJson(
         meals.push({
           name,
           date,
+          weekday,
           order: Number(orderKey),
           priority: item.isFirst ? 1 : 2
         });
@@ -76,14 +78,9 @@ function extractMealsFromJson(
   return meals;
 }
 
-/* ---------------------------------- */
-/* Merge logic                        */
-/* ---------------------------------- */
+/* ---------------- Merge ---------------- */
 
-function mergeMeals(
-  oldMeals: StoredMeal[],
-  newMeals: StoredMeal[]
-): StoredMeal[] {
+function mergeMeals(oldMeals: StoredMeal[], newMeals: StoredMeal[]) {
   const map = new Map<string, StoredMeal>();
 
   for (const m of oldMeals) {
@@ -95,25 +92,22 @@ function mergeMeals(
   }
 
   return Array.from(map.values()).sort(
-    (a, b) => a.date.localeCompare(b.date) || a.order - b.order
+    (a, b) =>
+      a.date.localeCompare(b.date) || a.order - b.order
   );
 }
 
-/* ---------------------------------- */
-/* Fetch + store                      */
-/* ---------------------------------- */
+/* ---------------- Fetch + store ---------------- */
 
 async function readMeals(env: Env): Promise<MealData> {
   const ignored = new Set(IGNORED_WORDS);
 
   const existing = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
 
-  const response = await fetch(MENU_URL);
-  if (!response.ok) {
-    throw new Error(`Fetch failed: ${response.status}`);
-  }
+  const res = await fetch(MENU_URL);
+  if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
 
-  const html = await response.text();
+  const html = await res.text();
 
   const json = extractJidelnicekJson(html);
   const extracted = extractMealsFromJson(json, ignored);
@@ -134,69 +128,40 @@ async function readMeals(env: Env): Promise<MealData> {
   return payload;
 }
 
-/* ---------------------------------- */
-/* Worker handlers                    */
-/* ---------------------------------- */
+/* ---------------- Worker ---------------- */
 
 export default {
 
-  async fetch(request: Request, env: Env): Promise<Response> {
-    try {
-      const url = new URL(request.url);
+  async fetch(request: Request, env: Env) {
+    const url = new URL(request.url);
 
-      if (url.pathname === "/") {
-        const stored = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
-        const payload = stored ?? await readMeals(env);
+    if (url.pathname === "/json") {
+      const stored = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
+      const payload = stored ?? await readMeals(env);
+      return new Response(JSON.stringify(payload, null, 2));
+    }
 
-        const html = `<!DOCTYPE html>
+    if (url.pathname === "/") {
+      const stored = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
+      const payload = stored ?? await readMeals(env);
+
+      return new Response(`
+<!doctype html>
 <html lang="cs">
-<head>
-<meta charset="utf-8"/>
-<title>Jídelníček</title>
-<style>
-body { font-family: Arial, sans-serif; padding:20px; }
-.meal { margin:4px 0; }
-.date { margin-top:14px; font-weight:bold; }
-</style>
-</head>
 <body>
-<h1>Uložená jídla</h1>
-
+<h1>Jídelníček</h1>
 ${payload.meals.map(m => `
-  <div class="meal">
-    <strong>${m.date}</strong> [${m.order}] – ${m.name}
+  <div>
+    <strong>${m.weekday} ${m.date}</strong>
+    [${m.order}] – ${m.name}
   </div>
 `).join("")}
-
-<small>Generováno: ${payload.generatedAt}</small>
 </body>
-</html>`;
-
-        return new Response(html, {
-          headers: {
-            "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": "no-store"
-          }
-        });
-      }
-
-      if (url.pathname === "/json") {
-        const stored = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
-        const payload = stored ?? await readMeals(env);
-
-        return new Response(JSON.stringify(payload, null, 2), {
-          headers: { "Content-Type": "application/json; charset=utf-8" }
-        });
-      }
-
-      return new Response("Not found", { status: 404 });
-
-    } catch (err) {
-      return new Response(
-        String(err),
-        { status: 500 }
-      );
+</html>
+`, { headers: { "Content-Type": "text/html; charset=utf-8" }});
     }
+
+    return new Response("Not found", { status: 404 });
   },
 
   async scheduled(_event: ScheduledEvent, env: Env) {
