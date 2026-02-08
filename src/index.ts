@@ -57,8 +57,9 @@ async function readMeals(env: Env): Promise<MealData> {
     const existingData = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
     const existingMeals = new Set<string>(existingData?.meals || []);
 
-    // Fetch the HTML page
+    // Fetch the HTML page with browser-like headers to avoid 403 errors
     const response = await fetch(MENU_URL);
+    console.log(response);
     if (!response.ok) {
         throw new Error(`Failed to fetch menu: ${response.status} ${response.statusText}`);
     }
