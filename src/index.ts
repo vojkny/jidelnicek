@@ -9,7 +9,7 @@ interface MealData {
 }
 
 const KEY = "daily:meals:v1";
-const MENU_URL = "http://109.80.99.184/ejidelnicek/menu/";
+const MENU_URL = "http://ejdl.knyt.tl/ejidelnicek/menu/";
 const IGNORED_WORDS = ["prázdniny", "oběd"];
 
 /**
