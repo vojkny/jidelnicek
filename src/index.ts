@@ -89,44 +89,62 @@ export default {
     try {
       const url = new URL(request.url);
 
-      // GET / -> return latest stored meal list
       if (url.pathname === "/") {
         const stored = await env.OTTO_JIDELNICEK.get(KEY, "json") as MealData | null;
 
-        if (!stored) {
-          // First run fallback: generate on-demand so endpoint works immediately
-          const payload = await readMeals(env);
-          return Response.json(payload, {
-            headers: {
-              "Cache-Control": "no-store",
-              "Content-Type": "application/json"
-            }
-          });
-        }
+        const payload = stored ?? await readMeals(env);
 
-        return Response.json(stored, {
+        const mealsHtml = payload.meals
+          .map(meal => `<div>${meal}</div>`)
+          .join("");
+
+        const html = `<!DOCTYPE html>
+  <html lang="cs">
+  <head>
+    <meta charset="UTF-8">
+    <title>Jídelníček</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 20px;
+      }
+      .meal {
+        margin-bottom: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Jídelníček – ${payload.date}</h1>
+    ${payload.meals.map(m => `<div class="meal">${m}</div>`).join("")}
+    <small>Generováno: ${payload.generatedAt}</small>
+  </body>
+  </html>`;
+
+        return new Response(html, {
           headers: {
-            "Cache-Control": "no-store",
-            "Content-Type": "application/json"
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store"
           }
         });
       }
 
       return new Response("Not Found", { status: 404 });
+
     } catch (error) {
       console.error("Error in fetch handler:", error);
+
       return new Response(
-        JSON.stringify({
-          error: "Internal Server Error",
-          message: error instanceof Error ? error.message : "Unknown error"
-        }),
+        `<h1>500 – Internal Server Error</h1><pre>${
+          error instanceof Error ? error.message : "Unknown error"
+        }</pre>`,
         {
           status: 500,
-          headers: { "Content-Type": "application/json" }
+          headers: { "Content-Type": "text/html; charset=utf-8" }
         }
       );
     }
   },
+
 
   // Daily cron trigger
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
